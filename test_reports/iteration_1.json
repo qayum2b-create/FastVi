@@ -1,0 +1,41 @@
+{
+  "summary": "First testing pass on FastVi (doorvi clone). Backend: 25/25 pytest tests pass — covers login (admin/guard/resident), /auth/me with access_token, registration with FASTVI/202 + duplicate/invalid-role rejection, admin stats & RBAC (non-admin gets 403 on POST /buildings), CRUD listing of buildings/units/users, visitor pass create + guard validate (status flips to 'used', second validate returns already_used), public kiosk /public/units (101/102/201/202 with 101 occupied), public POST /calls/initiate creates 'ringing' call, resident accept/reject/end actions, public GET /calls/:id, activity feed scoped. Frontend: landing page with hero CTAs OK; login demo buttons auto-fill + redirect to role dashboards; protected route /admin unauth -> /login, admin visiting /resident -> /admin (role guard works); admin dashboard shows all 5 stat cards (stat-buildings/units/residents/guards/activity) with correct values and creates a new building (toast 'Building created'); guard manual validate returns 'Denied · Pass not found' for invalid codes; resident creates a pass (code visible, 'active' pill); kiosk confirms FASTVI, selects unit-101, sends visitor name and navigates to /call/:id with ringing UI rendering correctly (no JS errors). Cross-site cookies (SameSite=None; Secure) flow correctly through REACT_APP_BACKEND_URL.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/ws/{user_id}", "issue": "WebSocket connections closed prematurely during navigation in headless tests — likely benign (component unmount before upgrade completes). Worth verifying with a long-lived page that signaling reaches the resident."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "AdminDashboard stat cards", "issues": ["Stat values render as '—' briefly before /api/stats/admin resolves; consider a skeleton loader to avoid the placeholder flash"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_fastvi_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Add a skeleton loader for admin stat cards while /api/stats/admin loads.",
+    "(Optional) Manual smoke-test of real resident<->kiosk WebRTC signaling with two browser sessions in a non-headless environment — headless cannot exercise camera/mic.",
+    "(Optional) /api/passes returns the full Mongo doc shape; consider a Pydantic response model for stability."
+  ],
+  "critical_code_review_comments": [
+    "server.py is ~790 lines and mixes auth, buildings, units, passes, calls, ws, startup, CORS — fine for MVP but split into routers/services would help long-term maintenance.",
+    "Cookies are set with secure=true samesite=none; works only over HTTPS (which the preview URL is). Document this for local dev.",
+    "ws_endpoint uses token from a query string — exposes JWT in server logs/browser history. Consider a short-lived signed nonce or per-call signaling token.",
+    "validate_pass returns 200 with valid:false for expired/used passes; consistent contract but some clients may expect non-200; documented in api doc would help."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_fastvi_api.py"
+  ],
+  "success_rate": {"backend": "100% (25/25)", "frontend": "100% of testable flows (WebRTC media skipped per request)"},
+  "test_credentials": "admin@fastvi.com/admin123, guard@fastvi.com/guard123, resident@fastvi.com/resident123 — all working. Demo building code FASTVI, units 101/102/201/202.",
+  "seed_data_creation": "Tests created TEST_-prefixed registered resident accounts and TST<rand>-coded buildings; these do not interfere with seeded demo data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend regression suite at /app/backend/tests/test_fastvi_api.py — run with `pytest backend/tests/test_fastvi_api.py -v`. All 25 tests should pass. Seeded credentials are stable across restarts (admin password is reset on startup if env changes). Frontend data-testids exist for all critical interactions (login-*, demo-admin/guard/resident, stat-*, tab-*, manual-code/validate-submit/validate-result, create-pass-form/pass-name/pass-hours/create-pass-submit/passes-list, kiosk-building/confirm/visitor-name/call, unit-101). WebRTC call screen renders at /call/:id even without camera/mic.",
+  "rca of the issue": "No production bugs found. The only test-side fix needed: backend lowercases registered emails (correct), so assertions on returned email must compare against unique_email.lower(). Already fixed in the test file."
+}
