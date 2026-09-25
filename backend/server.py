@@ -39,7 +39,10 @@ JWT_SECRET = os.environ["JWT_SECRET"]
 ROLE_RESIDENT = "resident"
 ROLE_ADMIN = "admin"
 ROLE_GUARD = "guard"
+ROLE_SUPER_ADMIN = "super_admin"
+# Roles that may sign up publicly (super_admin is bootstrap-only)
 VALID_ROLES = {ROLE_RESIDENT, ROLE_ADMIN, ROLE_GUARD}
+ALL_ROLES = {ROLE_RESIDENT, ROLE_ADMIN, ROLE_GUARD, ROLE_SUPER_ADMIN}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -305,7 +308,7 @@ async def me(request: Request, user=Depends(get_current_user)):
 # Buildings & Units
 # ---------------------------------------------------------------------------
 @api.post("/buildings")
-async def create_building(payload: BuildingIn, user=Depends(require_role(ROLE_ADMIN))):
+async def create_building(payload: BuildingIn, user=Depends(require_role(ROLE_ADMIN, ROLE_SUPER_ADMIN))):
     code = payload.code.upper().strip()
     if await db.buildings.find_one({"code": code}):
         raise HTTPException(status_code=400, detail="Building code already in use")
@@ -335,7 +338,7 @@ async def list_buildings(_user=Depends(get_current_user)):
     return out
 
 @api.post("/units")
-async def create_unit(payload: UnitIn, _user=Depends(require_role(ROLE_ADMIN))):
+async def create_unit(payload: UnitIn, _user=Depends(require_role(ROLE_ADMIN, ROLE_SUPER_ADMIN))):
     safe_object_id(payload.building_id)
     if await db.units.find_one({"building_id": payload.building_id, "number": payload.number}):
         raise HTTPException(status_code=400, detail="Unit already exists")
@@ -391,7 +394,7 @@ async def public_units(building_code: str):
             "units": out}
 
 @api.get("/users")
-async def list_users(role: Optional[str] = None, _user=Depends(require_role(ROLE_ADMIN))):
+async def list_users(role: Optional[str] = None, _user=Depends(require_role(ROLE_ADMIN, ROLE_SUPER_ADMIN))):
     query: Dict[str, Any] = {}
     if role:
         query["role"] = role
@@ -401,7 +404,7 @@ async def list_users(role: Optional[str] = None, _user=Depends(require_role(ROLE
     return out
 
 @api.post("/units/assign")
-async def assign_resident(payload: AssignResidentIn, _user=Depends(require_role(ROLE_ADMIN))):
+async def assign_resident(payload: AssignResidentIn, _user=Depends(require_role(ROLE_ADMIN, ROLE_SUPER_ADMIN))):
     unit = await db.units.find_one({"_id": safe_object_id(payload.unit_id)})
     target = await db.users.find_one({"_id": safe_object_id(payload.user_id)})
     if not unit or not target:
@@ -459,7 +462,7 @@ async def list_passes(user=Depends(get_current_user)):
     return out
 
 @api.post("/passes/validate")
-async def validate_pass(payload: ValidatePassIn, user=Depends(require_role(ROLE_GUARD, ROLE_ADMIN))):
+async def validate_pass(payload: ValidatePassIn, user=Depends(require_role(ROLE_GUARD, ROLE_ADMIN, ROLE_SUPER_ADMIN))):
     pass_doc = await db.passes.find_one({"code": payload.code.upper().strip()})
     if not pass_doc:
         raise HTTPException(status_code=404, detail="Pass not found")
@@ -621,7 +624,7 @@ async def list_activity(user=Depends(get_current_user)):
     return out
 
 @api.get("/stats/admin")
-async def admin_stats(_user=Depends(require_role(ROLE_ADMIN))):
+async def admin_stats(_user=Depends(require_role(ROLE_ADMIN, ROLE_SUPER_ADMIN))):
     units = await db.units.count_documents({})
     residents = await db.users.count_documents({"role": ROLE_RESIDENT})
     guards = await db.users.count_documents({"role": ROLE_GUARD})
@@ -633,6 +636,45 @@ async def admin_stats(_user=Depends(require_role(ROLE_ADMIN))):
         "buildings": buildings, "daily_activity": daily,
         "online_users": len(manager.online_ids()),
     }
+
+@api.get("/stats/platform")
+async def platform_stats(_user=Depends(require_role(ROLE_SUPER_ADMIN))):
+    users_total = await db.users.count_documents({})
+    admins = await db.users.count_documents({"role": ROLE_ADMIN})
+    residents = await db.users.count_documents({"role": ROLE_RESIDENT})
+    guards = await db.users.count_documents({"role": ROLE_GUARD})
+    buildings = await db.buildings.count_documents({})
+    units = await db.units.count_documents({})
+    passes_total = await db.passes.count_documents({})
+    passes_active = await db.passes.count_documents({"status": "active"})
+    calls_total = await db.calls.count_documents({})
+    week_iso = iso(now_utc() - timedelta(days=7))
+    weekly_activity = await db.activity.count_documents({"created_at": {"$gte": week_iso}})
+    return {
+        "users_total": users_total,
+        "admins": admins, "residents": residents, "guards": guards,
+        "buildings": buildings, "units": units,
+        "passes_total": passes_total, "passes_active": passes_active,
+        "calls_total": calls_total,
+        "weekly_activity": weekly_activity,
+        "online_users": len(manager.online_ids()),
+    }
+
+@api.get("/platform/users")
+async def platform_users(_user=Depends(require_role(ROLE_SUPER_ADMIN))):
+    out = []
+    async for u in db.users.find({}).sort("created_at", -1):
+        out.append(public_user(u))
+    return out
+
+@api.get("/platform/activity")
+async def platform_activity(_user=Depends(require_role(ROLE_SUPER_ADMIN))):
+    out = []
+    async for a in db.activity.find({}).sort("created_at", -1).limit(200):
+        a["id"] = str(a["_id"])
+        a.pop("_id", None)
+        out.append(a)
+    return out
 
 # ---------------------------------------------------------------------------
 # WebSockets
@@ -716,6 +758,31 @@ async def on_startup():
     elif not verify_password(admin_password, existing["password_hash"]):
         await db.users.update_one({"_id": existing["_id"]},
                                   {"$set": {"password_hash": hash_password(admin_password)}})
+
+    # Seed / upsert the Super Admin (platform owner)
+    super_email = os.environ.get("SUPER_ADMIN_EMAIL", "").lower().strip()
+    super_password = os.environ.get("SUPER_ADMIN_PASSWORD", "")
+    if super_email and super_password:
+        super_doc = await db.users.find_one({"email": super_email})
+        if not super_doc:
+            await db.users.insert_one({
+                "email": super_email,
+                "password_hash": hash_password(super_password),
+                "name": "FastVi Super Admin",
+                "role": ROLE_SUPER_ADMIN,
+                "phone": None,
+                "building_id": None,
+                "unit_id": None,
+                "created_at": iso(now_utc()),
+            })
+        else:
+            update = {}
+            if super_doc.get("role") != ROLE_SUPER_ADMIN:
+                update["role"] = ROLE_SUPER_ADMIN
+            if not verify_password(super_password, super_doc["password_hash"]):
+                update["password_hash"] = hash_password(super_password)
+            if update:
+                await db.users.update_one({"_id": super_doc["_id"]}, {"$set": update})
 
     demo_code = "FASTVI"
     building = await db.buildings.find_one({"code": demo_code})

@@ -22,7 +22,8 @@ export default function Login() {
 
   function dest(role) {
     if (from) return from;
-    if (role === "admin") return "/admin";
+    if (role === "super_admin") return "/admin";
+    if (role === "admin") return "/building-admin";
     if (role === "guard") return "/guard";
     return "/resident";
   }

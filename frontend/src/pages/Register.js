@@ -33,7 +33,11 @@ export default function Register() {
     setLoading(false);
     if (res.ok) {
       toast.success(`Welcome, ${res.user.name}`);
-      navigate(res.user.role === "admin" ? "/admin" : res.user.role === "guard" ? "/guard" : "/resident", { replace: true });
+      const role = res.user.role;
+      navigate(role === "super_admin" ? "/admin"
+              : role === "admin" ? "/building-admin"
+              : role === "guard" ? "/guard"
+              : "/resident", { replace: true });
     } else {
       setError(res.error);
     }

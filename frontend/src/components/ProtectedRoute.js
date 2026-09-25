@@ -16,7 +16,10 @@ export function ProtectedRoute({ children, roles }) {
     return <Navigate to="/login" replace state={{ from: location }} />;
   }
   if (roles && !roles.includes(user.role)) {
-    const fallback = user.role === "admin" ? "/admin" : user.role === "guard" ? "/guard" : "/resident";
+    const fallback = user.role === "super_admin" ? "/admin"
+                    : user.role === "admin" ? "/building-admin"
+                    : user.role === "guard" ? "/guard"
+                    : "/resident";
     return <Navigate to={fallback} replace />;
   }
   return children;
